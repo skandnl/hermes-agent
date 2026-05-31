@@ -130,7 +130,14 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured and _is_backend_available(configured):
+    # An explicitly configured built-in backend is honored regardless of whether
+    # its API key is present — the user asked for it (see tests/tools/
+    # test_web_tools_config.py). Plugin backends (not in the built-in set) are
+    # registered dynamically, so honor those only when actually available.
+    _BUILTIN_BACKENDS = {
+        "parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai",
+    }
+    if configured and (configured in _BUILTIN_BACKENDS or _is_backend_available(configured)):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
