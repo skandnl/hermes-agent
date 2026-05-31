@@ -130,7 +130,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured and _is_backend_available(configured):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -218,7 +218,17 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
-    return False
+
+    # User-installed web backend plugins are registered dynamically, so do a
+    # final registry lookup for names that are not part of the built-in legacy
+    # allow-list (e.g. ~/.hermes/plugins/web/google_search -> "google-search").
+    try:
+        from agent.web_search_registry import get_provider
+
+        provider = get_provider(backend)
+        return bool(provider and provider.is_available())
+    except Exception:
+        return False
 
 
 def _ddgs_package_importable() -> bool:

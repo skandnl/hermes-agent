@@ -177,6 +177,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME",
+    "DISCORD_GUILD_ID", "DISCORD_ALERT_CHANNEL_ID", "DISCORD_REPORT_CHANNEL_ID",
     "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME",
     "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
@@ -2875,6 +2876,30 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "messaging",
+    },
+    "DISCORD_GUILD_ID": {
+        "description": "Discord guild ID for fast Hermes Trading slash-command sync",
+        "prompt": "Discord guild ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "DISCORD_ALERT_CHANNEL_ID": {
+        "description": "Discord channel ID for Hermes Trading alerts",
+        "prompt": "Hermes Trading alert channel ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "DISCORD_REPORT_CHANNEL_ID": {
+        "description": "Discord channel ID for Hermes Trading daily and weekly reports",
+        "prompt": "Hermes Trading report channel ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
