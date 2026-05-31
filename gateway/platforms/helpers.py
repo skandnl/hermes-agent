@@ -9,9 +9,11 @@ import asyncio
 import json
 import logging
 import re
+import sqlite3
+import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 from utils import atomic_json_write
 
@@ -38,12 +40,112 @@ class MessageDeduplicator:
         # In message handler:
         if self._dedup.is_duplicate(msg_id):
             return
+
+    Cross-process persistence
+    -------------------------
+    Pass ``persist=True`` (with a distinct ``namespace`` per platform) to
+    back the cache with a small SQLite table at
+    ``~/.hermes/message_dedup.db``.  This stops a *second* gateway process
+    — e.g. one that briefly co-exists with the old one during a launchd/CD
+    restart, whose websocket is still delivering events — from re-handling a
+    message the first process already claimed.  The in-memory ``_seen`` dict
+    is per-process, so without the shared table two overlapping gateways each
+    treat the same message id as new and both act on it (e.g. Discord creates
+    two auto-threads + replies).  The SQLite claim is atomic
+    (``INSERT … ON CONFLICT`` serialised by SQLite), so exactly one process
+    wins each message.
     """
 
-    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
+    def __init__(
+        self,
+        max_size: int = 2000,
+        ttl_seconds: float = 300,
+        *,
+        persist: bool = False,
+        namespace: str = "default",
+        persist_path: Optional[Path] = None,
+    ):
         self._seen: Dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._namespace = namespace
+        self._conn: Optional[sqlite3.Connection] = None
+        self._db_lock = threading.Lock()
+        self._prune_counter = 0
+        if persist:
+            self._init_persist(persist_path)
+
+    def _init_persist(self, persist_path: Optional[Path]) -> None:
+        """Open (and lazily create) the shared SQLite dedup table.
+
+        Best-effort: any failure leaves ``self._conn = None`` so the
+        deduplicator silently falls back to in-memory-only behaviour rather
+        than breaking message handling.
+        """
+        try:
+            if persist_path is None:
+                from hermes_constants import get_hermes_home
+
+                persist_path = get_hermes_home() / "message_dedup.db"
+            conn = sqlite3.connect(
+                str(persist_path), timeout=5.0, check_same_thread=False
+            )
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                # WAL unavailable on this filesystem (NFS/SMB/FUSE) — the
+                # default rollback journal still serialises writers, which
+                # is all the atomic claim needs.
+                pass
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS message_dedup ("
+                "namespace TEXT NOT NULL, "
+                "msg_id TEXT NOT NULL, "
+                "ts REAL NOT NULL, "
+                "PRIMARY KEY (namespace, msg_id))"
+            )
+            conn.commit()
+            self._conn = conn
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "MessageDeduplicator: cross-process persistence disabled (%s)", e
+            )
+            self._conn = None
+
+    def _claim_persist(self, msg_id: str, now: float) -> bool:
+        """Atomically claim *msg_id* in the shared table.
+
+        Returns True if it was ALREADY claimed (by this or another process)
+        within the TTL window — i.e. the caller should treat it as a
+        duplicate. Returns False if this call won the claim (fresh message).
+        """
+        cutoff = now - self._ttl
+        with self._db_lock:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO message_dedup (namespace, msg_id, ts) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(namespace, msg_id) DO UPDATE SET ts=excluded.ts "
+                    "WHERE message_dedup.ts < ?",
+                    (self._namespace, msg_id, now, cutoff),
+                )
+                self._conn.commit()
+                # rowcount == 1 -> fresh INSERT, or an expired row re-claimed.
+                # rowcount == 0 -> conflict on a still-fresh row => duplicate.
+                duplicate = cur.rowcount == 0
+                self._prune_counter += 1
+                if self._prune_counter >= 500:
+                    self._prune_counter = 0
+                    self._conn.execute(
+                        "DELETE FROM message_dedup WHERE ts < ?", (cutoff,)
+                    )
+                    self._conn.commit()
+                return duplicate
+            except sqlite3.Error as e:
+                logger.debug("MessageDeduplicator persist claim failed: %s", e)
+                # On DB error, fall back to in-memory-only (don't drop the msg).
+                return False
 
     def is_duplicate(self, msg_id: str) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
@@ -55,6 +157,12 @@ class MessageDeduplicator:
                 return True
             # Entry has expired — remove it and treat as new
             del self._seen[msg_id]
+        # Cross-process atomic claim (only when persistence is enabled).
+        if self._conn is not None and self._claim_persist(msg_id, now):
+            # Another (or this) process already owns it — remember locally so
+            # future same-process hits skip the DB entirely.
+            self._seen[msg_id] = now
+            return True
         self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl

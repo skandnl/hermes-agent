@@ -611,7 +611,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
-        self._dedup = MessageDeduplicator()
+        #
+        # ``persist=True``: back the dedup cache with the shared SQLite table
+        # so that during a launchd/CD restart — when the old gateway's
+        # websocket can still deliver events while the new process is already
+        # connected — only ONE process handles each message. Without this the
+        # two processes' in-memory caches don't see each other and both
+        # auto-create a thread + reply for the same message (double threads).
+        self._dedup = MessageDeduplicator(persist=True, namespace="discord")
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
