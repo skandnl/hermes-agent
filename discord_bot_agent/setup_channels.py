@@ -150,7 +150,7 @@ async def setup_channels():
 
         # JSON으로도 저장
         out_path = "/tmp/discord_channels.json"
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"\n채널 ID 저장: {out_path}")
 
