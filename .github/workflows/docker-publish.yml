@@ -1,5 +1,6 @@
 name: Docker Build and Publish
 
+# CD enabled on skandnl fork.
 on:
   push:
     branches: [main]
