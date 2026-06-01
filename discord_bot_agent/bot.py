@@ -155,7 +155,6 @@ class HermesTradingDiscordBot:
             else:
                 synced = await self.bot.tree.sync()
                 logger.info("Synced %d global Discord commands", len(synced))
-            self.bot.loop.create_task(self._scheduler_loop())
 
         @self.bot.event
         async def on_ready():
@@ -555,34 +554,6 @@ class HermesTradingDiscordBot:
                 )
             await send_discord_text(self.bot, ch_id, text, view=view)
 
-    # ── 스케줄러 ───────────────────────────────────────────────────
-    async def _scheduler_loop(self) -> None:
-        await self.bot.wait_until_ready()
-        self._last_youtube_scan_key: str | None = None
-        while not self.bot.is_closed():
-            now = datetime.now(self.config.timezone)
-
-            # 일간 리포트 + YouTube 스캔 (매일 09:00)
-            if now.hour == self.config.daily_report_time.hour and now.minute == self.config.daily_report_time.minute:
-                key = now.strftime("%Y-%m-%d")
-                if self._last_daily_key != key:
-                    self._last_daily_key = key
-                    await self.send_daily_report()
-                    # YouTube RSS 스캔 — 일간 리포트 직후 실행
-                    await self.send_youtube_scan()
-
-            # 주간 리포트 (매주 월 09:00)
-            if (
-                now.weekday() == self.config.weekly_report_day
-                and now.hour == self.config.weekly_report_time.hour
-                and now.minute == self.config.weekly_report_time.minute
-            ):
-                key = now.strftime("%G-W%V")
-                if self._last_weekly_key != key:
-                    self._last_weekly_key = key
-                    await self.send_weekly_report()
-
-            await asyncio.sleep(30)
 
 
     def run(self) -> None:
@@ -592,12 +563,30 @@ class HermesTradingDiscordBot:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="hermes-trading-discord",
-        description="Run the Hermes Trading AI Discord bot. Research and paper trading only.",
+        description="Hermes Trading AI Discord bot. Use --daily/--weekly/--youtube-scan for Hermes cron one-shot tasks.",
     )
     parser.add_argument(
         "--check-config",
         action="store_true",
         help="Validate required environment variables and exit without connecting to Discord.",
+    )
+    # ── Hermes cron one-shot 모드 ──────────────────────────────────────
+    # 이 플래그들은 Hermes cron 스케줄러가 직접 호출합니다.
+    # 봇에 로그인 후 해당 리포트/스캔을 1회 실행하고 즉시 종료합니다.
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="(Hermes cron) 일간 리포트 + YouTube 스캔을 1회 실행하고 종료.",
+    )
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="(Hermes cron) 주간 리포트를 1회 실행하고 종료.",
+    )
+    parser.add_argument(
+        "--youtube-scan",
+        action="store_true",
+        help="(Hermes cron) YouTube RSS 스캔을 1회 실행하고 종료.",
     )
     args = parser.parse_args()
 
@@ -627,4 +616,28 @@ def main() -> None:
         print(f"Database          : {config.database_path}")
         return
 
+    # ── Hermes cron one-shot 실행 모드 ────────────────────────────────
+    if args.daily or args.weekly or args.youtube_scan:
+        bot_instance = HermesTradingDiscordBot(config)
+
+        async def _run_once() -> None:
+            """봇 로그인 후 지정 작업을 1회 실행하고 종료."""
+            async with bot_instance.bot:
+                await bot_instance.bot.login(config.token)
+                # wait_until_ready 없이 내부 상태 초기화
+                if args.daily:
+                    logger.info("[cron] --daily: 일간 리포트 + YouTube 스캔 실행")
+                    await bot_instance.send_daily_report()
+                    await bot_instance.send_youtube_scan()
+                if args.weekly:
+                    logger.info("[cron] --weekly: 주간 리포트 실행")
+                    await bot_instance.send_weekly_report()
+                if args.youtube_scan:
+                    logger.info("[cron] --youtube-scan: YouTube RSS 스캔 실행")
+                    await bot_instance.send_youtube_scan()
+
+        asyncio.run(_run_once())
+        return
+
+    # ── 상시 봇 모드 (슬래시 커맨드 서빙) ────────────────────────────
     HermesTradingDiscordBot(config).run()
